@@ -117,4 +117,4 @@ class AcoliteModel():
                 data_choice = data_choice_t
             else:
                 data_choice = np.vstack((data_choice, data_choice_t))
-        return(data_choice)
+        return data_choice
