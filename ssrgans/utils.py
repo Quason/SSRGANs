@@ -2,6 +2,7 @@ import os
 
 from osgeo import gdal, ogr, osr
 import numpy as np
+import skimage.io
 
 
 def vector2mask(raster_fn, vector_fn):
@@ -26,7 +27,9 @@ def vector2mask(raster_fn, vector_fn):
     gdal.RasterizeLayer(target_ds, [1], source_layer, burn_values=[0]) # 栅格化函数
     target_ds = None
     raster = None
-    return raster_fn_out
+    mask = skimage.io.imread(raster_fn_out) != 0
+    os.remove(raster_fn_out)
+    return mask
 
 
 def band_math(band_list, expression, scale=1.0):

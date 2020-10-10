@@ -31,7 +31,7 @@ class AcoliteModel():
         self.height = np.shape(data)[0]
         self.water = None
 
-    def cloud_detect(self):
+    def cloud_detect0(self):
         rhot_red = [item for item in self.rhot_fns if 'rhot_665' in item][0]
         if self.sensor == 'S2A':
             rhos_green = [item for item in self.rhos_fns if 'rhos_560' in item][0]
@@ -48,6 +48,80 @@ class AcoliteModel():
         scene_class[cloud] = 2
         utils.raster2tif(scene_class, self.geo_trans, self.proj_ref, dst_fn, type='uint8')
         self.water = (ndsi>-0.01) * (cloud<0.5)
+
+    def cloud_detect(self, vector=None):
+        if self.sensor == 'S2A':
+            blue_fn = [item for item in self.rhot_fns if 'rhot_492' in item][0]
+            green_fn = [item for item in self.rhot_fns if 'rhot_560' in item][0]
+            red_fn = [item for item in self.rhot_fns if 'rhot_665' in item][0]
+            nir_fn = [item for item in self.rhot_fns if 'rhot_833' in item][0]
+            swir1_fn = [item for item in self.rhot_fns if 'rhot_1614' in item][0]
+            swir2_fn = [item for item in self.rhot_fns if 'rhot_2202' in item][0]
+            cirrus_fn = [item for item in self.rhot_fns if 'rhot_1373' in item][0]
+        else:
+            blue_fn = [item for item in self.rhot_fns if 'rhot_492' in item][0]
+            green_fn = [item for item in self.rhot_fns if 'rhot_559' in item][0]
+            red_fn = [item for item in self.rhot_fns if 'rhot_665' in item][0]
+            nir_fn = [item for item in self.rhot_fns if 'rhot_833' in item][0]
+            swir1_fn = [item for item in self.rhot_fns if 'rhot_1610' in item][0]
+            swir2_fn = [item for item in self.rhot_fns if 'rhot_2186' in item][0]
+            cirrus_fn = [item for item in self.rhot_fns if 'rhot_1377' in item][0]
+        blue = utils.band_math([blue_fn], 'B1')
+        green = utils.band_math([green_fn], 'B1')
+        red = utils.band_math([red_fn], 'B1')
+        ndsi = utils.band_math([green_fn, swir1_fn], '(B1-B2)/(B1+B2)')
+        swir2 = utils.band_math([swir2_fn], 'B1')
+        ndvi = utils.band_math([nir_fn, red_fn], '(B1-B2)/(B1+B2)')
+        blue_swir = utils.band_math([blue_fn, swir1_fn], 'B1/B2')
+        # step 1
+        cloud_prob1 = (swir2 > 0.03) * (ndsi<0.8) * (ndvi<0.5) * (red>0.15)
+        mean_vis = (blue + green + red) / 3
+        cloud_prob2 = (
+            np.abs(blue - mean_vis)/mean_vis
+            + np.abs(green - mean_vis)/mean_vis
+            + np.abs(red - mean_vis)/mean_vis) < 0.7
+        cloud_prob3 = (blue - 0.5*red) > 0.08
+        cloud_prob4 = utils.band_math([nir_fn,swir1_fn], 'B1/B2>0.75')
+        cloud = cloud_prob1 * cloud_prob2 * cloud_prob3 * cloud_prob4
+        cloud = cloud.astype(np.uint8)
+        cnt_cloud = len(cloud[cloud==1])
+        cloud_level = cnt_cloud / np.shape(cloud)[0] / np.shape(cloud)[1]
+        print('cloud level:%.3f' % cloud_level)
+        # cloud shadow detection
+        cirrus = utils.band_math([cirrus_fn], 'B1')
+        # step 1
+        cloud_prob1 = (red - 0.07) / (0.25 - 0.07)
+        cloud_prob1[cloud_prob1<0] = 0
+        cloud_prob1[cloud_prob1>1] = 1
+        # step 2
+        cloud_prob2 = (ndsi + 0.1) / (0.2 + 0.1)
+        cloud_prob2[cloud_prob2<0] = 0
+        cloud_prob2[cloud_prob2>1] = 1
+        cloud_prob = cloud_prob1 * cloud_prob2
+        # step 3: water
+        cloud_prob[blue_swir>2.5] = 0
+        cloud_prob = (cloud_prob * 100).astype(np.int)
+        self.water = (ndsi > -0.1) * (cloud_prob == 0) * (cirrus<0.012)
+        
+        # ice mask
+        if self.sensor == 'S2A':
+            blue_rrs_fn = [item for item in self.rrs_fns if '492' in item][0]
+            green_rrs_fn = [item for item in self.rrs_fns if '560' in item][0]
+            red_rrs_fn = [item for item in self.rrs_fns if '665' in item][0]
+        else:
+            blue_rrs_fn = [item for item in self.rrs_fns if '492' in item][0]
+            green_rrs_fn = [item for item in self.rrs_fns if '559' in item][0]
+            red_rrs_fn = [item for item in self.rrs_fns if '665' in item][0]
+        rrs_blue = utils.band_math([blue_rrs_fn], 'B1')
+        rrs_green = utils.band_math([green_rrs_fn], 'B1')
+        rrs_red = utils.band_math([red_rrs_fn], 'B1')
+        mean_vis_rrs = (rrs_blue + rrs_green + rrs_red) / 3
+        ice = mean_vis_rrs > 0.04 # 海冰在可见光波段的反射率普遍大于0.15
+        self.water *= (ice==0)
+        # vector mask
+        if vector is not None:
+            vector_mask = utils.vector2mask(blue_fn, vector)
+            self.water = self.water * (vector_mask==0)
 
     def rrs_extractor(self):
         for item in self.rrs_fns:

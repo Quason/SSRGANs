@@ -13,9 +13,10 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from sklearn import svm
 from sklearn import linear_model
+import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
-import matplotlib.pyplot as plt
+
 
 from ssrgans import preprocess, models
 
@@ -63,8 +64,8 @@ def BP_test():
     input_ds= scaler.transform(input_ds)
     target_ds = load_data('./data/houseTargets.mat')
     target_ds = target_ds.flatten()
-    print(input_ds.shape)
-    print(target_ds.shape)
+    print('input shape:' % input_ds.shape)
+    print('target shape:' % target_ds.shape)
     bp = MLPRegressor(
         hidden_layer_sizes=(100, ), activation='relu', solver='adam', alpha=0.0001,
         batch_size='auto', learning_rate='constant', learning_rate_init=0.01,
@@ -95,10 +96,22 @@ def BP_test():
     plt.show()
 
 
-def reg_models(datasets, method='BP', train_percent=0.5):
-    data = np.load(datasets)
-    input_ds = data['x_all']
-    target_ds = data['y_all']
+def reg_models_train(datasets, method='BP', train_percent=0.5, show_fig=False,
+                    save_net=''):
+    ''' regression models
+    '''
+    input_ds = None
+    target_ds = None
+    for item in datasets:
+        data_tmp = np.load(item)
+        input_tmp = data_tmp['x_all']
+        target_tmp = data_tmp['y_all']
+        if input_ds is None:
+            input_ds = input_tmp
+            target_ds = target_tmp
+        else:
+            input_ds = np.vstack((input_ds, input_tmp))
+            target_ds = np.hstack((target_ds, target_tmp))
     # normalize
     scaler_i = StandardScaler()
     scaler_i.fit(input_ds)
@@ -122,6 +135,9 @@ def reg_models(datasets, method='BP', train_percent=0.5):
     elif method == 'RF':
         print('-- Random Forest --')
         net = linear_model.Lasso(alpha=0.1)
+    elif method == 'LR':
+        print('-- Linear Regression --')
+        net = linear_model.LinearRegression()
     train_data, test_data, train_label, test_label = train_test_split(
         input_ds, target_ds, random_state=1, train_size=train_percent, test_size=1-train_percent)
     net.fit(train_data, train_label)
@@ -136,51 +152,100 @@ def reg_models(datasets, method='BP', train_percent=0.5):
     print('R_test=%.2f' % (np.corrcoef(test_label, test_predict)[0][1]))
     print('MRE_train=%.3f' % (np.mean(np.abs((train_predict-train_label)/train_label))))
     print('MRE_test=%.3f' % (np.mean(np.abs((test_predict-test_label)/test_label))))
-    # figure
-    data_max = max([np.max(train_label), np.max(train_predict), np.max(test_label), np.max(test_predict)]) + 0.01
-    data_min = min([np.min(train_label), np.min(train_predict), np.min(test_label), np.min(test_predict)]) - 0.01
-    plt.plot(train_label, train_predict, 'b*')
-    plt.plot(test_label, test_predict, 'r*')
-    plt.plot([data_min, data_max], [data_min, data_max], '--', color='#aaaaaa')
-    plt.xlabel('GT')
-    plt.ylabel('predict')
-    plt.axis('square')
-    plt.xlim(data_min, data_max)
-    plt.ylim(data_min, data_max)
-    plt.show()
+    if show_fig:
+        # figure
+        data_max = max([np.max(train_label), np.max(train_predict), np.max(test_label), np.max(test_predict)]) + 0.01
+        data_min = min([np.min(train_label), np.min(train_predict), np.min(test_label), np.min(test_predict)]) - 0.01
+        plt.plot(train_label, train_predict, 'bo')
+        plt.plot(test_label, test_predict, 'r*')
+        plt.plot([data_min, data_max], [data_min, data_max], '--', color='#aaaaaa')
+        plt.xlabel('GT')
+        plt.ylabel('predict')
+        plt.axis('square')
+        plt.xlim(data_min, data_max)
+        plt.ylim(data_min, data_max)
+        plt.show()
+    if save_net:
+        ssrn_model = {
+            'net': net,
+            'inputScale': scaler_i,
+            'targetMean': mean_target,
+            'targetStd': std_target
+        }
+        with open('./data/%s' % save_net, 'wb') as fn:
+            pickle.dump(ssrn_model, fn)
+    return net, scaler_i, mean_target, std_target
 
 
-def preprocess_s2():
+def reg_models_apply(net, datasets, *, input_scale, target_mean, target_std, show_fig=False):
+    data = np.load(datasets)
+    input_ds = data['x_all']
+    target_ds = data['y_all']
+    # normalize
+    input_ds= input_scale.transform(input_ds)
+    target_ds = (target_ds - target_mean) / target_std
+    data_predict = net.predict(input_ds)
+    # reverse
+    data_predict = (data_predict * target_std) + target_mean
+    data_label = (target_ds * target_std) + target_mean
+    print('R_apply=%.2f' % (np.corrcoef(data_label, data_predict)[0][1]))
+    print('MRE_apply=%.3f' % (np.mean(np.abs((data_predict-data_label)/data_label))))
+    if show_fig:
+        # figure
+        data_max = max([np.max(data_label), np.max(data_predict)]) + 0.01
+        data_min = min([np.min(data_label), np.min(data_predict)]) - 0.01
+        plt.plot(data_label, data_predict, 'g*')
+        plt.plot([data_min, data_max], [data_min, data_max], '--', color='#aaaaaa')
+        plt.xlabel('GT')
+        plt.ylabel('predict')
+        plt.axis('square')
+        plt.xlim(data_min, data_max)
+        plt.ylim(data_min, data_max)
+        plt.show()
+
+
+def preprocess_s2(ifile, opath, vector, dstfile, kmean_cnt=5):
     root_dir = os.path.dirname(os.path.abspath(__file__))
-    # user input args
-    parser = argparse.ArgumentParser(
-        description='ACOLITE acmospheric correction')
-    parser.add_argument('--ifile', type=str, help='source L1C file')
-    parser.add_argument('--opath', type=str, help='output path')
-    parser.add_argument('--vector', type=str, help='laker vector for mask')
-    args = parser.parse_args()
-    opath = args.opath
-    # acolite_dir = preprocess.main(args.ifile, opath, args.vector)
-    acolite_dir = os.path.join(opath, '__temp__/ACOLITE')
-
+    acolite_dir = preprocess.main(ifile, opath, vector)
     # Rrs extraction
-    if 'S2A' in os.path.split(args.ifile[0:-1])[1]:
+    if 'S2A' in os.path.split(ifile[0:-1])[1]:
         acolite = models.AcoliteModel(acolite_dir, opath, sensor='S2A')
     else:
         acolite = models.AcoliteModel(acolite_dir, opath, sensor='S2B')
-    acolite.cloud_detect()
+    acolite.cloud_detect(vector=vector)
     acolite.rrs_extractor()
     #  0:443, 1:492, 2:560, 3:665, 4:704, 5:740, 6:783, 7:833, 8:865
-    data_all = acolite.kmean_extractor(5)
+    data_all = acolite.kmean_extractor(kmean_cnt)
     x_all = data_all[:, [0,1,2,3,8]]
     y_all = data_all[:, 4]
-    target_fn = os.path.join(root_dir, 'data/ssr1d.npz')
+    target_fn = os.path.join(root_dir, 'data/%s'%(dstfile))
     np.savez(target_fn, x_all=x_all, y_all=y_all)
-    # shutil.rmtree(acolite_dir)
+    shutil.rmtree(acolite_dir)
     return target_fn
 
 
 if __name__ == '__main__':
     # BP_test()
-    # preprocess_s2()
-    reg_models('./data/ssr1d.npz', method='RF')
+
+    # ifile = '/mnt/d/data/L1/with-insitu/dianchi/S2B_MSIL1C_20171108T033929_N0206_R061_T48RTN_20171108T104340.SAFE'
+    # opath = '/mnt/d/tmp/pip-test/'
+    # vector = '/mnt/d/data/vector/dianchi.geojson'
+    # dstfile = 'dataset_dianchi.npz'
+    # opath = os.path.join(opath, str(uuid.uuid1()))
+    # preprocess_s2(ifile, opath, vector, dstfile, kmean_cnt=3)
+
+    train_fns = [
+        './data/dataset_taihu.npz',
+        './data/dataset_dianchi.npz',
+        './data/dataset_qiandaohu.npz'
+    ]
+    net, input_scale, target_mean, target_std = reg_models_train(
+        train_fns, method='LR', show_fig=False, save_net='ssrn_704.pkl'
+    )
+    reg_models_apply(
+        net, './data/dataset_xingyunhu.npz',
+        input_scale=input_scale,
+        target_mean=target_mean,
+        target_std=target_std,
+        show_fig=True
+    )
