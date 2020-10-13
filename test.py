@@ -5,17 +5,20 @@ import argparse
 import uuid
 import shutil
 import pickle
+import random
 
 import numpy as np
 import scipy.io as scio
 from sklearn.neural_network import MLPRegressor
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestRegressor
 from sklearn import svm
 from sklearn import linear_model
 import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
 
 
 from ssrgans import preprocess, models
@@ -27,33 +30,6 @@ def load_data(src_fn):
         if key[:2] != '__':
             return data[key]
     return None
-
-
-class Baseline(nn.Module):
-    ''' baseline network: BP
-    '''
-    def __init__(self, classes):
-        super().__init__()
-        self.classes = classes
-        
-        self.classifier = nn.Sequential(
-            nn.Linear(200, 2048),
-            nn.ReLU(),
-            nn.Dropout(),
-            nn.Linear(2048, 4096),
-            nn.ReLU(),
-            nn.Dropout(),
-            nn.Linear(4096, 2048),
-            nn.ReLU(),
-            nn.Dropout(),
-            nn.Linear(2048, classes),
-        )
-
-    def forward(self, x):
-        batch_size = x.size()[0]
-        x = x.view(batch_size, 200)
-        x = self.classifier(x)
-        return x
 
 
 def BP_test():
@@ -96,6 +72,86 @@ def BP_test():
     plt.show()
 
 
+class MyDataset(Dataset):
+    def __init__(self, data, label):
+        self.data = data
+        self.label = label
+
+    def __len__(self):
+        return len(self.label)
+
+    def __getitem__(self, index):
+        data_t = self.data[index]
+        data_t = np.reshape(1, -1)
+        data_t = torch.from_numpy(data_t)
+        label_t = self.label[index]
+        label_t = torch.tensor(label_t).type(torch.LongTensor)
+        return data_t, label_t
+
+
+def myLoader1d(dataset, label, train_perc):
+    batch_size_train = 4
+    batch_size_test = 4
+    dsize = dataset.shape
+    valid_index = []
+    for i in range(dsize[1]):
+        for j in range(dsize[2]):
+            valid_index.append([i,j])
+    random.shuffle(valid_index)
+    # train dataset
+    train_size = int(len(valid_index) * train_perc)
+    train_index = valid_index[0:train_size]
+    train_data = []
+    train_label = []
+    for item in train_index:
+        t_data = dataset[:, item[0], item[1]]
+        t_data = t_data.reshape(1, dsize[0])
+        t_data = torch.from_numpy(t_data)
+        t_data = t_data.type(torch.FloatTensor)
+        t_label = torch.tensor(label[item[0], item[1]])
+        train_data.append(t_data)
+        train_label.append(t_label.type(torch.LongTensor))
+    trainloader = torch.utils.data.DataLoader(
+        MyDataset(train_data,train_label), batch_size=batch_size_train, shuffle=True)
+    # test dataset
+    test_index = valid_index[train_size:]
+    test_data = []
+    test_label = []
+    for item in test_index:
+        t_data = dataset[:, item[0], item[1]]
+        t_data = t_data.reshape(1, dsize[0])
+        t_data = torch.from_numpy(t_data)
+        t_data = t_data.type(torch.FloatTensor)
+        t_label = torch.tensor(label[item[0], item[1]])
+        test_data.append(t_data)
+        test_label.append(t_label.type(torch.LongTensor))
+    testloader = torch.utils.data.DataLoader(
+        MyDataset(test_data,test_label), batch_size=batch_size_test, shuffle=True)
+    return trainloader, testloader
+
+
+def myLoader3d(train_datasets, train_perc=0.5):
+    batch_size_train = 4
+    batch_size_test = 4
+    datasets = np.load(train_datasets)
+    all_data = datasets['x_all']
+    all_label = datasets['y_all']
+    random.shuffle(all_data)
+    random.shuffle(all_label)
+    train_size = int(len(all_data) * train_perc)
+    # train dataset
+    train_data = all_data[0:train_size]
+    train_label = all_label[0:train_size]
+    trainloader = torch.utils.data.DataLoader(
+        MyDataset(train_data,train_label), batch_size=batch_size_train, shuffle=True)
+    # test dataset
+    test_data = all_data[train_size:]
+    test_label = all_label[train_size:]
+    testloader = torch.utils.data.DataLoader(
+        MyDataset(test_data,test_label), batch_size=batch_size_train, shuffle=True)
+    return trainloader, testloader
+
+
 def reg_models_train(datasets, method='BP', train_percent=0.5, show_fig=False,
                     save_net=''):
     ''' regression models
@@ -134,10 +190,16 @@ def reg_models_train(datasets, method='BP', train_percent=0.5, show_fig=False,
         net = svm.SVR()
     elif method == 'RF':
         print('-- Random Forest --')
-        net = linear_model.Lasso(alpha=0.1)
+        net = RandomForestRegressor(max_depth=10, random_state=0)
     elif method == 'LR':
         print('-- Linear Regression --')
         net = linear_model.LinearRegression()
+    elif method == 'LASSO':
+        print('-- LASSO --')
+        net = linear_model.Lasso(alpha=0.01)
+    else:
+        print('[Error] unmatched method!')
+        sys.exit(0)
     train_data, test_data, train_label, test_label = train_test_split(
         input_ds, target_ds, random_state=1, train_size=train_percent, test_size=1-train_percent)
     net.fit(train_data, train_label)
@@ -177,6 +239,31 @@ def reg_models_train(datasets, method='BP', train_percent=0.5, show_fig=False,
     return net, scaler_i, mean_target, std_target
 
 
+def dl_models_train(datasets_fn):
+    print('train...')
+    trainloader, testloader = myLoader3d(datasets_fn, train_perc=0.3)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    net.to(device=device)
+    criterion = nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(net.parameters(), lr=0.001)
+    for epoch in range(30):
+        running_loss_sum = 0
+        print('epoch %d...' % (epoch+1))
+        running_loss = 0.0
+        for i, data in enumerate(trainloader):
+            inputs, labels = data
+            inputs = inputs.to(device=device)
+            labels = labels.to(device=device)
+            optimizer.zero_grad()
+            outputs = net(inputs)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+            running_loss += loss.item()
+        print('loss: %.3f' % (running_loss/len(trainloader)))
+    return net
+
+
 def reg_models_apply(net, datasets, *, input_scale, target_mean, target_std, show_fig=False):
     data = np.load(datasets)
     input_ds = data['x_all']
@@ -204,7 +291,9 @@ def reg_models_apply(net, datasets, *, input_scale, target_mean, target_std, sho
         plt.show()
 
 
-def preprocess_s2(ifile, opath, vector, dstfile, kmean_cnt=5):
+def preprocess_s2(
+    ifile, opath, vector, dstfile, *,
+    kmean_cnt=5, target_model='sklearn', twave=704, kernel=1):
     root_dir = os.path.dirname(os.path.abspath(__file__))
     acolite_dir = preprocess.main(ifile, opath, vector)
     # Rrs extraction
@@ -215,37 +304,46 @@ def preprocess_s2(ifile, opath, vector, dstfile, kmean_cnt=5):
     acolite.cloud_detect(vector=vector)
     acolite.rrs_extractor()
     #  0:443, 1:492, 2:560, 3:665, 4:704, 5:740, 6:783, 7:833, 8:865
-    data_all = acolite.kmean_extractor(kmean_cnt)
-    x_all = data_all[:, [0,1,2,3,8]]
-    y_all = data_all[:, 4]
-    target_fn = os.path.join(root_dir, 'data/%s'%(dstfile))
-    np.savez(target_fn, x_all=x_all, y_all=y_all)
+    if target_model == 'sklearn':
+        data_all = acolite.kmean_extractor(kmean_cnt)
+        x_all = data_all[:, [0,1,2,3,8]]
+        y_all = data_all[:, 4]
+    elif target_model == 'cnn':
+        x_all, y_all = acolite.kmean_extractor_3d(
+            classes=kmean_cnt, target_cnt=10000, target_wave=twave, kernel=kernel)
+    np.savez(dstfile, x_all=x_all, y_all=y_all)
     shutil.rmtree(acolite_dir)
-    return target_fn
+    return dstfile
 
 
 if __name__ == '__main__':
     # BP_test()
 
-    # ifile = '/mnt/d/data/L1/with-insitu/dianchi/S2B_MSIL1C_20171108T033929_N0206_R061_T48RTN_20171108T104340.SAFE'
+    # ifile = '/mnt/d/data/L1/with-insitu/xingyunLake/S2A_MSIL1C_20181118T034021_N0207_R061_T48QTM_20181118T072005.SAFE'
     # opath = '/mnt/d/tmp/pip-test/'
-    # vector = '/mnt/d/data/vector/dianchi.geojson'
-    # dstfile = 'dataset_dianchi.npz'
+    # vector = '/mnt/d/data/vector/xingyunLake.geojson'
+    # dstfile = './data/__temp__/dataset_xingyunhu_1x1.npz'
     # opath = os.path.join(opath, str(uuid.uuid1()))
-    # preprocess_s2(ifile, opath, vector, dstfile, kmean_cnt=3)
+    # preprocess_s2(ifile, opath, vector, dstfile, kmean_cnt=3, target_model='cnn', twave=704, kernel=1)
 
-    train_fns = [
-        './data/dataset_taihu.npz',
-        './data/dataset_dianchi.npz',
-        './data/dataset_qiandaohu.npz'
-    ]
-    net, input_scale, target_mean, target_std = reg_models_train(
-        train_fns, method='LR', show_fig=False, save_net='ssrn_704.pkl'
-    )
-    reg_models_apply(
-        net, './data/dataset_xingyunhu.npz',
-        input_scale=input_scale,
-        target_mean=target_mean,
-        target_std=target_std,
-        show_fig=True
-    )
+    # train_fns = [
+    #     './data/dataset_taihu.npz',
+    #     './data/dataset_dianchi.npz',
+    #     './data/dataset_qiandaohu.npz',
+    #     './data/dataset_hulunhu.npz',
+    #     './data/dataset_xingyunhu.npz',
+    # ]
+    # net, input_scale, target_mean, target_std = reg_models_train(
+    #     train_fns, method='BP', show_fig=False, save_net='ssrn_704_BP.pkl'
+    # )
+    # # 效果较差：星云湖，千岛湖
+    # reg_models_apply(
+    #     net, './data/dataset_dianchi_test.npz',
+    #     input_scale=input_scale,
+    #     target_mean=target_mean,
+    #     target_std=target_std,
+    #     show_fig=True
+    # )
+
+    dl_models_train('./data/__temp__/dataset_xingyunhu_1x1.npz')
+    

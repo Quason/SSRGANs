@@ -192,3 +192,97 @@ class AcoliteModel():
             else:
                 data_choice = np.vstack((data_choice, data_choice_t))
         return data_choice
+
+    def kmean_extractor_3d(self, classes, target_cnt, target_wave, kernel):
+        if kernel % 2 == 0:
+            print('[Error] kernel size needs to be odd!!')
+            return None
+        if self.sensor == 'S2A':
+            RrsB1 = [item for item in self.rrs_fns if 'Rrs_443' in item][0]
+            RrsB2 = [item for item in self.rrs_fns if 'Rrs_492' in item][0]
+            RrsB3 = [item for item in self.rrs_fns if 'Rrs_560' in item][0]
+            RrsB4 = [item for item in self.rrs_fns if 'Rrs_665' in item][0]
+            RrsB5 = [item for item in self.rrs_fns if 'Rrs_704' in item][0]
+            RrsB6 = [item for item in self.rrs_fns if 'Rrs_740' in item][0]
+            RrsB7 = [item for item in self.rrs_fns if 'Rrs_783' in item][0]
+            RrsB8 = [item for item in self.rrs_fns if 'Rrs_833' in item][0]
+            RrsB8A = [item for item in self.rrs_fns if 'Rrs_865' in item][0]
+        else:
+            RrsB1 = [item for item in self.rrs_fns if 'Rrs_442' in item][0]
+            RrsB2 = [item for item in self.rrs_fns if 'Rrs_492' in item][0]
+            RrsB3 = [item for item in self.rrs_fns if 'Rrs_559' in item][0]
+            RrsB4 = [item for item in self.rrs_fns if 'Rrs_665' in item][0]
+            RrsB5 = [item for item in self.rrs_fns if 'Rrs_704' in item][0]
+            RrsB6 = [item for item in self.rrs_fns if 'Rrs_739' in item][0]
+            RrsB7 = [item for item in self.rrs_fns if 'Rrs_780' in item][0]
+            RrsB8 = [item for item in self.rrs_fns if 'Rrs_833' in item][0]
+            RrsB8A = [item for item in self.rrs_fns if 'Rrs_864' in item][0]
+        nband_stack = [RrsB1, RrsB2, RrsB3, RrsB4, RrsB5, RrsB6, RrsB7, RrsB8, RrsB8A]
+        data_stack = np.zeros((self.height, self.width, len(nband_stack)))
+        x_train = []
+        index_train = []
+        for i in range(len(nband_stack)):
+            data_stack[:,:,i] = utils.band_math([nband_stack[i]], 'B1')
+        n = 0
+        line_start = int(kernel/2)
+        line_end = self.height - int(kernel/2)
+        colm_start = int(kernel/2)
+        colm_end = self.width - int(kernel/2)
+        water_cp = np.zeros((self.height, self.width), np.uint8)
+        for i in range(line_start, line_end):
+            for j in range(colm_start, colm_end):
+                if self.water[i, j]:
+                    i_start = i - int(kernel/2)
+                    i_end = i + int(kernel/2) + 1
+                    j_start = j - int(kernel/2)
+                    j_end = j + int(kernel/2) + 1
+                    patch = self.water[i_start:i_end, j_start:j_end]
+                    if np.sum(patch) == kernel**2:
+                        x_train.append(np.squeeze(data_stack[i, j, :]))
+                        index_train.append(i*self.width+j)
+                        n += 1
+                        water_cp[i, j] = 1
+        mb_kmeans = MiniBatchKMeans(classes)
+        x_train = np.array(x_train)
+        mb_kmeans.fit(x_train)
+        y_train = mb_kmeans.predict(x_train)
+        y_train += 1 # 使标号从1开始，0为mask区域
+        kmean_res = np.zeros((self.height, self.width), np.uint8)
+        kmean_res[water_cp==1] = y_train
+        dst_fn = os.path.join(self.res_dir, self.pre_name+'kmean.tif')
+        utils.raster2tif(kmean_res, self.geo_trans, self.proj_ref, dst_fn, type='uint8')
+        per_choice = int(target_cnt/classes) # 每个类别需要选取的样本个数
+
+        index_train = np.array(index_train)
+        data_choice = []
+        label_choice = []
+        for i in range(classes):
+            index_t = index_train[y_train==i+1]
+            if len(index_t) * 0.5 > per_choice:
+                a = [x for x in range(len(index_t))]
+                index_choice_t = index_t[random.sample(a, per_choice)]
+            else:
+                choice_cnt = np.shape(data_t)[0] * 0.5
+                index_choice_t = index_t[random.sample(a, choice_cnt)]
+            for item in index_choice_t:
+                index_line = int(item / self.width)
+                index_colm = item % self.width
+                index_line_s = index_line - int(kernel/2)
+                index_line_e = index_line + int(kernel/2) + 1
+                index_colm_s = index_colm - int(kernel/2)
+                index_colm_e = index_colm + int(kernel/2) + 1
+                # 0:443, 1:492, 2:560, 3:665, 4:704, 5:740, 6:783, 7:833, 8:865
+                data_t = data_stack[
+                    index_line_s:index_line_e,
+                    index_colm_s:index_colm_e,
+                    [0,1,2,3,8]
+                ]
+                data_choice.append(np.squeeze(data_t))
+                if target_wave == 704:
+                    label_t = data_stack[index_line, index_colm, 4]
+                elif target_wave == 740:
+                    label_t = data_stack[index_line, index_colm, 5]
+                elif target_wave == 783:
+                    label_t = data_stack[index_line, index_colm, 6]
+                label_choice.append(label_t)
+        return data_choice, label_choice
