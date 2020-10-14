@@ -22,6 +22,7 @@ from torch.utils.data import Dataset, DataLoader
 
 
 from ssrgans import preprocess, models
+from ssrgans import nets
 
 
 def load_data(src_fn):
@@ -82,10 +83,10 @@ class MyDataset(Dataset):
 
     def __getitem__(self, index):
         data_t = self.data[index]
-        data_t = np.reshape(1, -1)
-        data_t = torch.from_numpy(data_t)
+        data_t = np.reshape(data_t, (1, -1))
+        data_t = torch.from_numpy(data_t).type(torch.FloatTensor)
         label_t = self.label[index]
-        label_t = torch.tensor(label_t).type(torch.LongTensor)
+        label_t = torch.tensor(label_t).type(torch.FloatTensor)
         return data_t, label_t
 
 
@@ -131,11 +132,11 @@ def myLoader1d(dataset, label, train_perc):
 
 
 def myLoader3d(train_datasets, train_perc=0.5):
-    batch_size_train = 4
-    batch_size_test = 4
     datasets = np.load(train_datasets)
-    all_data = datasets['x_all']
-    all_label = datasets['y_all']
+    all_data = list(datasets['x_all'])
+    all_label = list(datasets['y_all'])
+    batch_size_train = len(all_label)
+    batch_size_test = 10
     random.shuffle(all_data)
     random.shuffle(all_label)
     train_size = int(len(all_data) * train_perc)
@@ -239,28 +240,88 @@ def reg_models_train(datasets, method='BP', train_percent=0.5, show_fig=False,
     return net, scaler_i, mean_target, std_target
 
 
-def dl_models_train(datasets_fn):
+def dl_models_train(net, datasets_fn):
     print('train...')
+    rrs_max = 0.07
+    rrs_min = 0
     trainloader, testloader = myLoader3d(datasets_fn, train_perc=0.3)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     net.to(device=device)
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(net.parameters(), lr=0.001)
-    for epoch in range(30):
+    for epoch in range(500):
         running_loss_sum = 0
         print('epoch %d...' % (epoch+1))
         running_loss = 0.0
         for i, data in enumerate(trainloader):
             inputs, labels = data
+            print(inputs)
+            labels = torch.reshape(labels, (-1, 1))
+            inputs = (inputs - rrs_min) / (rrs_max - rrs_min)
+            labels = (labels - rrs_min) / (rrs_max - rrs_min)
             inputs = inputs.to(device=device)
             labels = labels.to(device=device)
             optimizer.zero_grad()
             outputs = net(inputs)
             loss = criterion(outputs, labels)
+            # print(torch.sum(torch.abs(torch.flatten(outputs) - labels)))
             loss.backward()
             optimizer.step()
             running_loss += loss.item()
-        print('loss: %.3f' % (running_loss/len(trainloader)))
+            # if (i+1) % 50 == 0:
+            if True:
+                print('epoch %d loss: %.3f' % (epoch+1, running_loss))
+                running_loss = 0
+    # test
+    print('test...')
+    predict_data = []
+    labels_list = []
+    with torch.no_grad():
+        for i, data in enumerate(testloader):
+            inputs, labels = data
+            inputs = (inputs - rrs_min) / (rrs_max - rrs_min)
+            labels = (labels - rrs_min) / (rrs_max - rrs_min)
+            labels_list += list(labels.numpy())
+            inputs = inputs.to(device=device)
+            labels = labels.to(device=device)
+            outputs = torch.flatten(net(inputs))
+            predict_data += list(outputs.cpu().numpy())
+    R2 = np.corrcoef(predict_data, labels_list)[0, 1]
+    # figure
+    data_max = max([max(labels_list), max(predict_data)])
+    data_min = max([min(labels_list), min(predict_data)])
+    plt.plot(labels_list, predict_data, 'b*')
+    plt.plot([data_min, data_max], [data_min, data_max], '--', color='#aaaaaa')
+    plt.xlabel('GT')
+    plt.ylabel('predict')
+    plt.axis('square')
+    plt.xlim(data_min, data_max)
+    plt.ylim(data_min, data_max)
+    plt.show()
+    return net
+
+
+def dl_models_apply(net, datasets_fn):
+    print('apply ...')
+    trainloader, testloader = myLoader3d(datasets_fn, train_perc=0.3)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    net.to(device=device)
+    criterion = nn.L1Loss()
+    optimizer = torch.optim.Adam(net.parameters(), lr=0.001)
+    for i, data in enumerate(trainloader):
+        inputs, labels = data
+        inputs = inputs.to(device=device)
+        labels = labels.to(device=device)
+        optimizer.zero_grad()
+        outputs = net(inputs)
+        loss = criterion(torch.flatten(outputs), labels)
+        loss.backward()
+        optimizer.step()
+        running_loss += loss.item()
+        if (i+1) % 50 == 0:
+            print('epoch %d loss: %.3f' % (epoch+1, running_loss/10))
+            running_loss = 0
+
     return net
 
 
@@ -345,5 +406,5 @@ if __name__ == '__main__':
     #     show_fig=True
     # )
 
-    dl_models_train('./data/__temp__/dataset_xingyunhu_1x1.npz')
-    
+    net = nets.Baseline(5, 1)
+    dl_models_train(net, './data/__temp__/dataset_xingyunhu_1x1.npz')

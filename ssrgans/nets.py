@@ -12,27 +12,18 @@ from torch.utils.data import Dataset, DataLoader
 class Baseline(nn.Module):
     ''' baseline network: BP
     '''
-    def __init__(self, classes):
+    def __init__(self, in_channels, classes):
         super().__init__()
         self.classes = classes
         
-        self.classifier = nn.Sequential(
-            nn.Linear(5, 2048),
-            nn.ReLU(),
-            nn.Dropout(),
-            nn.Linear(2048, 4096),
-            nn.ReLU(),
-            nn.Dropout(),
-            nn.Linear(4096, 2048),
-            nn.ReLU(),
-            nn.Dropout(),
-            nn.Linear(2048, 1),
+        self.regressor = nn.Sequential(
+            nn.Linear(in_channels, 1),
         )
 
     def forward(self, x):
         batch_size = x.size()[0]
-        x = x.view(batch_size, 200)
-        x = self.classifier(x)
+        x = x.view(batch_size, -1)
+        x = self.regressor(x)
         return x
 
 
