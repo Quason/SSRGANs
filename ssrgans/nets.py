@@ -17,12 +17,12 @@ class Baseline(nn.Module):
         self.classes = classes
         
         self.regressor = nn.Sequential(
-            nn.Linear(in_channels, 1),
+            nn.Linear(in_channels, 1000), # hidden layer
+            nn.ReLU(),
+            nn.Linear(1000, 1), # output layer
         )
 
     def forward(self, x):
-        batch_size = x.size()[0]
-        x = x.view(batch_size, -1)
         x = self.regressor(x)
         return x
 
