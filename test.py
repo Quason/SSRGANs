@@ -6,6 +6,7 @@ import uuid
 import shutil
 import pickle
 import random
+from glob import glob
 
 import numpy as np
 import scipy.io as scio
@@ -19,6 +20,8 @@ import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
+import skimage.io
+import gdal
 
 
 from ssrgans import preprocess, models
@@ -133,8 +136,14 @@ def myLoader1d(dataset, label, train_perc):
 
 def myLoader3d(train_datasets, train_perc=0.5):
     datasets = np.load(train_datasets)
-    all_data = list(datasets['x_all'][0::100,[3,4]] * 100)
-    all_label = list(datasets['y_all'][0::100] * 100)
+    if len(datasets['x_all'][0].shape) == 1:
+        all_data = list(datasets['x_all'][:,[1,2,3,4]] * 100)
+    elif len(datasets['x_all'][0].shape) == 3:
+        all_data = list(datasets['x_all'][:,[1,2,3,4],:,:] * 100)
+    else:
+        print('[Error] unrecoganized dataset')
+        sys.exit(0)
+    all_label = list(datasets['y_all'][:] * 100)
     batch_size_train = 5
     batch_size_test = 5
     train_size = int(len(all_data) * train_perc)
@@ -245,7 +254,7 @@ def dl_models_train(net, datasets_fn):
     net.to(device=device)
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(net.parameters(), lr=0.001)
-    for epoch in range(50):
+    for epoch in range(10):
         running_loss_sum = 0
         print('epoch %d...' % (epoch+1))
         running_loss = 0.0
@@ -282,6 +291,9 @@ def dl_models_train(net, datasets_fn):
     # figure
     data_max = max([max(labels_list), max(predict_data)])
     data_min = min([min(labels_list), min(predict_data)])
+    offset = (data_max - data_min) / 20
+    data_min -= offset
+    data_max += offset
     plt.plot(labels_list, predict_data, 'b*')
     plt.plot([data_min, data_max], [data_min, data_max], '--', color='#aaa')
     plt.xlabel('GT')
@@ -315,6 +327,68 @@ def dl_models_apply(net, datasets_fn):
             running_loss = 0
 
     return net
+
+
+def dl_models_apply_img(model_fn, wavelength, src_dir, dst_fn):
+    print('super spectral resolution...')
+    water_fn = glob(os.path.join(src_dir, '*water.tif'))[0]
+    rrs_fns = glob(os.path.join(src_dir, '*_Rrs_*'))
+    water = skimage.io.imread(water_fn) == 1
+    img_width = np.shape(water)[1]
+    img_height = np.shape(water)[0]
+    net = torch.load(model_fn)
+    # 0:443, 1:492, 2:560, 3:665, 4:704, 5:740, 6:783, 7:833, 8:865
+    rrs_band = ['Rrs_483', 'Rrs_561', 'Rrs_655', 'Rrs_865']
+    nband = len(rrs_band)
+    water_mask = np.copy(water)
+    band_sum = 0
+    for i in range(nband):
+        rrs_fn = [item for item in rrs_fns if rrs_band[i] in item]
+        rrs_fn = rrs_fn[0]
+        ds = gdal.Open(rrs_fn)
+        band_data = ds.GetRasterBand(1).ReadAsArray()
+        band_sum += band_data
+    water_mask[np.isnan(band_sum)] = False
+    cnt_label = len(water_mask[water_mask])
+    # extract_data = np.zeros((nband,cnt_label))
+    data_stack = np.zeros((img_height, img_width, nband))
+    if cnt_label == 0:
+        return 0
+    geo_trans, proj_ref = None, None
+    for i in range(nband):
+        rrs_fn = [item for item in rrs_fns if rrs_band[i] in item]
+        rrs_fn = rrs_fn[0]
+        ds = gdal.Open(rrs_fn)
+        if geo_trans is None:
+            geo_trans = ds.GetGeoTransform()
+            proj_ref = ds.GetProjection()
+        band_data = ds.GetRasterBand(1).ReadAsArray()
+        data_stack[:, :, i] = band_data
+    model_kernel = 11
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    net.to(device=device)
+    with torch.no_grad():
+        for i in range(img_height):
+            for j in range(img_width):
+                if water[i, j]:
+                    x_s = i - int(model_kernel / 2)
+                    x_e = i + int(model_kernel / 2) + 1
+                    y_s = j - int(model_kernel / 2)
+                    y_e = j + int(model_kernel / 2) + 1
+                    patch = data_stack[x_s:x_e, y_s:y_e]
+                    patch = np.swapaxes(patch, 1, 2)
+                    patch = np.swapaxes(patch, 0, 1)
+                    inputs = inputs.to(device=device)
+                    outputs = net(inputs)
+    extract_data = extract_data.T
+    extract_data = input_scale.transform(extract_data)
+    predict = model.predict(extract_data)
+    predict = predict * target_std + target_mean
+    dst_data = water_mask.astype(float) * 0
+    dst_data[water_mask] = predict
+    rrs_red = [item for item in rrs_fns if 'Rrs_655' in item][0]
+    dst_fn = rrs_red.replace('Rrs_655', 'Rrs_%s'%wavelength)
+    utils.raster2tif(dst_data, geo_trans, proj_ref, dst_fn, type='float')
 
 
 def reg_models_apply(net, datasets, *, input_scale, target_mean, target_std, show_fig=False):
@@ -375,9 +449,9 @@ if __name__ == '__main__':
     # ifile = '/mnt/d/data/L1/with-insitu/xingyunLake/S2A_MSIL1C_20181118T034021_N0207_R061_T48QTM_20181118T072005.SAFE'
     # opath = '/mnt/d/tmp/pip-test/'
     # vector = '/mnt/d/data/vector/xingyunLake.geojson'
-    # dstfile = './data/__temp__/dataset_xingyunhu_1x1.npz'
+    # dstfile = './data/__temp__/dataset_xingyunhu_11x11.npz'
     # opath = os.path.join(opath, str(uuid.uuid1()))
-    # preprocess_s2(ifile, opath, vector, dstfile, kmean_cnt=3, target_model='cnn', twave=704, kernel=1)
+    # preprocess_s2(ifile, opath, vector, dstfile, kmean_cnt=3, target_model='cnn', twave=704, kernel=11)
 
     # train_fns = [
     #     './data/dataset_taihu.npz',
@@ -398,5 +472,9 @@ if __name__ == '__main__':
     #     show_fig=True
     # )
 
-    net = nets.Baseline(2, 1)
-    dl_models_train(net, './data/dataset_xingyunhu_1x1.npz')
+    # net = nets.Baseline(4, 1)
+    # dl_models_train(net, './data/dataset_xingyunhu_1x1.npz')
+    # net = nets.WaterNet(4, 1)
+    # net = dl_models_train(net, './data/__temp__/dataset_xingyunhu_11x11.npz')
+    # save_net = './data/ssrn_704_cnn.pt'
+    # torch.save(net, save_net)

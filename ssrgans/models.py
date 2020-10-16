@@ -122,6 +122,8 @@ class AcoliteModel():
         if vector is not None:
             vector_mask = utils.vector2mask(blue_fn, vector)
             self.water = self.water * (vector_mask==0)
+        dst_fn = os.path.join(self.res_dir, self.pre_name+'water.tif')
+        utils.raster2tif(self.water, self.geo_trans, self.proj_ref, dst_fn, type='uint8')
 
     def rrs_extractor(self):
         for item in self.rrs_fns:
@@ -277,6 +279,9 @@ class AcoliteModel():
                     index_colm_s:index_colm_e,
                     [0,1,2,3,8]
                 ]
+                # 调换坐标顺序
+                data_t = np.swapaxes(data_t, 1, 2)
+                data_t = np.swapaxes(data_t, 0, 1)
                 data_choice.append(np.squeeze(data_t))
                 if target_wave == 704:
                     label_t = data_stack[index_line, index_colm, 4]

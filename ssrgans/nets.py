@@ -14,15 +14,37 @@ class Baseline(nn.Module):
     '''
     def __init__(self, in_channels, classes):
         super().__init__()
-        self.classes = classes
-        
         self.regressor = nn.Sequential(
-            nn.Linear(in_channels, 1000), # hidden layer
+            nn.Linear(in_channels, 1024), # hidden layer
             nn.ReLU(),
-            nn.Linear(1000, 1), # output layer
+            nn.Linear(1024, classes), # output layer
         )
 
     def forward(self, x):
+        x = self.regressor(x)
+        return x
+
+
+class WaterNet(nn.Module):
+    def __init__(self, in_channels, classes):
+        super().__init__()
+        self.features = nn.Sequential(
+            nn.Conv2d(in_channels, 64, 3, stride=1, padding=1), # 4*11*11 -> 4*11*11
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=2), # 64*5*5
+            nn.Conv2d(64, 128, 3, stride=1, padding=1), # 128*5*5
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(kernel_size=2), # 128*2*2
+        )
+        self.regressor = nn.Sequential(
+            nn.Linear(2*2*128, 1024),
+            nn.ReLU(inplace=True),
+            nn.Linear(1024, classes),
+        )
+
+    def forward(self, x):
+        x = self.features(x)
+        x = torch.flatten(x, 1)
         x = self.regressor(x)
         return x
 
