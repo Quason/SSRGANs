@@ -25,7 +25,7 @@ import gdal
 
 
 from ssrgans import preprocess, models
-from ssrgans import nets
+from ssrgans import nets, utils
 
 
 def load_data(src_fn):
@@ -329,7 +329,7 @@ def dl_models_apply(net, datasets_fn):
     return net
 
 
-def dl_models_apply_img(model_fn, wavelength, src_dir, dst_fn):
+def dl_models_apply_img(model_fn, src_dir, dst_fn, scale=0.01):
     print('super spectral resolution...')
     water_fn = glob(os.path.join(src_dir, '*water.tif'))[0]
     rrs_fns = glob(os.path.join(src_dir, '*_Rrs_*'))
@@ -367,28 +367,32 @@ def dl_models_apply_img(model_fn, wavelength, src_dir, dst_fn):
     model_kernel = 11
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     net.to(device=device)
+    predict = np.zeros((img_height, img_width))
+    print(img_height, img_width)
     with torch.no_grad():
         for i in range(img_height):
+            if i%100==0:
+                print('%.1f%%' % (i/img_height*100))
             for j in range(img_width):
                 if water[i, j]:
                     x_s = i - int(model_kernel / 2)
                     x_e = i + int(model_kernel / 2) + 1
                     y_s = j - int(model_kernel / 2)
                     y_e = j + int(model_kernel / 2) + 1
-                    patch = data_stack[x_s:x_e, y_s:y_e]
-                    patch = np.swapaxes(patch, 1, 2)
-                    patch = np.swapaxes(patch, 0, 1)
-                    inputs = inputs.to(device=device)
-                    outputs = net(inputs)
-    extract_data = extract_data.T
-    extract_data = input_scale.transform(extract_data)
-    predict = model.predict(extract_data)
-    predict = predict * target_std + target_mean
-    dst_data = water_mask.astype(float) * 0
-    dst_data[water_mask] = predict
-    rrs_red = [item for item in rrs_fns if 'Rrs_655' in item][0]
-    dst_fn = rrs_red.replace('Rrs_655', 'Rrs_%s'%wavelength)
-    utils.raster2tif(dst_data, geo_trans, proj_ref, dst_fn, type='float')
+                    patch_water = water[x_s:x_e, y_s:y_e]
+                    if np.sum(patch_water) == model_kernel**2:
+                        patch = data_stack[x_s:x_e, y_s:y_e, :] / scale
+                        patch = np.swapaxes(patch, 1, 2)
+                        patch = np.swapaxes(patch, 0, 1)
+                        inputs = np.reshape(patch, (1, nband, model_kernel, model_kernel))
+                        inputs = torch.from_numpy(inputs)
+                        inputs = inputs.type(torch.FloatTensor)
+                        inputs = inputs.to(device=device)
+                        outputs = net(inputs)
+                        predict[i, j] = outputs
+    predict = predict * scale
+    predict[water < 0.5] = -9999
+    utils.raster2tif(predict, geo_trans, proj_ref, dst_fn, type='float')
 
 
 def reg_models_apply(net, datasets, *, input_scale, target_mean, target_std, show_fig=False):
@@ -443,6 +447,15 @@ def preprocess_s2(
     return dstfile
 
 
+def preprocess_LC08(ifile, opath, vector):
+    root_dir = os.path.dirname(os.path.abspath(__file__))
+    acolite_dir = preprocess.main(ifile, opath, vector)
+    acolite = models.AcoliteModelL8(acolite_dir, opath)
+    acolite.cloud_detect(vector=vector)
+    acolite.rrs_extractor()
+    shutil.rmtree(acolite_dir)
+
+
 if __name__ == '__main__':
     # BP_test()
 
@@ -452,6 +465,12 @@ if __name__ == '__main__':
     # dstfile = './data/__temp__/dataset_xingyunhu_11x11.npz'
     # opath = os.path.join(opath, str(uuid.uuid1()))
     # preprocess_s2(ifile, opath, vector, dstfile, kmean_cnt=3, target_model='cnn', twave=704, kernel=11)
+
+    # ifile = '/mnt/d/data/L1/with-insitu/dianchi/LC08_L1TP_129043_20200322_20200326_01_T1'
+    # opath = '/mnt/d/tmp/pip-test/'
+    # vector = '/mnt/d/data/vector/dianchi.geojson'
+    # opath = os.path.join(opath, str(uuid.uuid1()))
+    # preprocess_LC08(ifile, opath, vector)
 
     # train_fns = [
     #     './data/dataset_taihu.npz',
@@ -478,3 +497,8 @@ if __name__ == '__main__':
     # net = dl_models_train(net, './data/__temp__/dataset_xingyunhu_11x11.npz')
     # save_net = './data/ssrn_704_cnn.pt'
     # torch.save(net, save_net)
+
+    model_fn = './data/ssrn_704_cnn.pt'
+    src_dir = r'D:/tmp/pip-test/a9fd2b86-11b7-11eb-97e1-4ccc6a435ee3'
+    dst_fn = './data/__temp__/S2A_MSI_2018_11_18_03_40_21_T48QTM_704_CNN.tif'
+    dl_models_apply_img(model_fn, src_dir, dst_fn, scale=0.01)

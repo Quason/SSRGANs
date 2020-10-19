@@ -81,12 +81,18 @@ def main(ifile, opath, vector):
     acolite_config = os.path.join(root_dir, 'resource/acolite_python_settings.txt')
     if 'S2A' in os.path.split(path_L1C)[1]:
         l2_list = 'Rrs_443,Rrs_492,Rrs_560,Rrs_665,Rrs_704,Rrs_740,Rrs_783,Rrs_833,Rrs_865,Rrs_1614'
+        jp2_b2_mid = os.path.join(path_L1C, 'GRANULE')
+        jp2_b2_mid = glob(os.path.join(jp2_b2_mid, '*'))[0]
+        jp2_b2 = glob(os.path.join(jp2_b2_mid, 'IMG_DATA', '*B02.jp2'))[0]
     elif 'S2B' in os.path.split(path_L1C)[1]:
         l2_list = 'Rrs_442,Rrs_492,Rrs_559,Rrs_665,Rrs_704,Rrs_739,Rrs_780,Rrs_833,Rrs_864,Rrs_1610'
+        jp2_b2_mid = os.path.join(path_L1C, 'GRANULE')
+        jp2_b2_mid = glob(os.path.join(jp2_b2_mid, '*'))[0]
+        jp2_b2 = glob(os.path.join(jp2_b2_mid, 'IMG_DATA', '*B02.jp2'))[0]
+    elif 'LC08' in os.path.split(path_L1C)[1]:
+        l2_list = 'Rrs_443,Rrs_483,Rrs_561,Rrs_655,Rrs_865,Rrs_1609,Rrs_2201'
+        jp2_b2 = glob(os.path.join(path_L1C, '*B2*'))[0]
     # sub-region
-    jp2_b2_mid = os.path.join(path_L1C, 'GRANULE')
-    jp2_b2_mid = glob(os.path.join(jp2_b2_mid, '*'))[0]
-    jp2_b2 = glob(os.path.join(jp2_b2_mid, 'IMG_DATA', '*B02.jp2'))[0]
     ds = gdal.Open(jp2_b2)
     geo_trans = ds.GetGeoTransform()
     proj_ref = ds.GetProjection()

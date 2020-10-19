@@ -94,4 +94,4 @@ class NetQin(nn.Module):
         x = self.dropout(x)
         x = self.conv2d8(x)
         x = torch.sum(torch.sum(x, dim=2), dim=2)
-        return x
+        return 
