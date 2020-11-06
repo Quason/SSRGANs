@@ -3,6 +3,7 @@ import os
 from osgeo import gdal, ogr, osr
 import numpy as np
 import skimage.io
+import ephem
 
 
 def vector2mask(raster_fn, vector_fn):
@@ -140,3 +141,26 @@ def get_epsg(src_fn):
     srs = osr.SpatialReference(wkt=proj_ref)
     assert srs.IsProjected, "raster has no projection"
     return srs.GetAttrValue("authority", 1)
+
+
+def calc_sola_position(lon, lat, date):
+    """solar position calculator
+
+    Args:
+        lon (lon): ground longitude
+        lat (lat): ground latitude
+        date (date): time
+    """ 
+    gatech = ephem.Observer()
+    gatech.lon = str(lon)
+    gatech.lat = str(lat)
+    gatech.date = date
+    sun = ephem.Sun()
+    sun.compute(gatech)
+    solz = str(sun.alt)
+    sola = str(sun.az)
+    solz_split = solz.split(':')
+    solz = float(solz_split[0]) + float(solz_split[1])/60 + float(solz_split[2])/3600
+    sola_split = sola.split(':')
+    sola = float(sola_split[0]) + float(sola_split[1])/60 + float(sola_split[2])/3600
+    return([90-solz, sola])

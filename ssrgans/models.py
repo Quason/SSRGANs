@@ -6,6 +6,7 @@ import random
 import numpy as np
 from osgeo import gdal
 from sklearn.cluster import MiniBatchKMeans
+from cv2 import cv2
 
 from ssrgans import utils
 
@@ -49,7 +50,7 @@ class AcoliteModel():
         utils.raster2tif(scene_class, self.geo_trans, self.proj_ref, dst_fn, type='uint8')
         self.water = (ndsi>-0.01) * (cloud<0.5)
 
-    def cloud_detect(self, vector=None):
+    def cloud_detect(self, vector=None, sola=None, solz=None):
         if self.sensor == 'S2A':
             blue_fn = [item for item in self.rhot_fns if 'rhot_492' in item][0]
             green_fn = [item for item in self.rhot_fns if 'rhot_560' in item][0]
@@ -88,6 +89,53 @@ class AcoliteModel():
         cloud_level = cnt_cloud / np.shape(cloud)[0] / np.shape(cloud)[1]
         print('cloud level:%.3f' % cloud_level)
         # cloud shadow detection
+        cloud_large = np.copy(cloud) * 0
+        # -- only the cloud over water was saved --
+        # labels_struct[0]: count;
+        # labels_struct[1]: label matrix;
+        # labels_struct[2]: [minY,minX,block_width,block_height,cnt]
+        labels_struct = cv2.connectedComponentsWithStats(cloud, connectivity=4)
+        img_h, img_w = cloud.shape
+        for i in range(1, labels_struct[0]):
+            patch = labels_struct[2][i]
+            if patch[4] > 2000:
+                cloud_large[labels_struct[1]==i] = 1
+        PI = 3.1415
+        shadow_dire = sola + 180.0
+        if shadow_dire > 360.0:
+            shadow_dire -= 360.0
+        cloud_height = [100+100*i for i in range(100)]
+        shadow_mean = []
+        for item in cloud_height:
+            shadow_dist = item * np.tan(solz/180.0*PI) / 10.0
+            w_offset = np.sin(shadow_dire/180.0*PI) * shadow_dist
+            h_offset = np.cos(shadow_dire/180.0*PI) * shadow_dist * -1
+            affine_m = np.array([[1,0,w_offset], [0,1,h_offset]])
+            cloud_shadow = cv2.warpAffine(cloud_large, affine_m, (img_w,img_h))
+            cloud_shadow = (cloud_shadow==1) * (cloud_large!=1)
+            shadow_mean.append(np.mean(green[cloud_shadow]))
+        cloud_hight_opt = cloud_height[shadow_mean.index(min(shadow_mean))]
+        shadow_dist_metric = cloud_hight_opt * np.tan(solz/180.0*PI)
+        if cloud_hight_opt>200 and cloud_hight_opt<10000 and shadow_dist_metric<5000:
+            print('cloud height: %dm' % cloud_hight_opt)
+            shadow_dist = cloud_hight_opt * np.tan(solz/180.0*PI) / pixel_size
+            w_offset = np.sin(shadow_dire/180.0*PI) * shadow_dist
+            h_offset = np.cos(shadow_dire/180.0*PI) * shadow_dist * -1
+            affine_m = np.array([[1,0,w_offset], [0,1,h_offset]])
+            cloud_shadow = cv2.warpAffine(cloud_large, affine_m, (img_w,img_h))
+            cloud_shadow = (cloud_shadow==1) * (cloud_large!=1)
+
+            cloud1 = np.copy(cloud)
+            cloud1[cloud_shadow] = 2
+            dst_fn = os.path.join(self.res_dir, self.pre_name+'cloud.tif')
+            utils.raster2tif(cloud1, self.geo_trans, self.proj_ref, dst_fn, type='uint8')
+
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+            cloud_shadow = cv2.morphologyEx(
+                cloud_shadow.astype(np.uint8), cv2.MORPH_OPEN, kernel)
+            cloud_shadow_key = True
+        else:
+            cloud_shadow_key = False
         cirrus = utils.band_math([cirrus_fn], 'B1')
         # step 1
         cloud_prob1 = (red - 0.07) / (0.25 - 0.07)
@@ -258,6 +306,10 @@ class AcoliteModel():
         index_train = np.array(index_train)
         data_choice = []
         label_choice = []
+        rrs_red = [item for item in self.rrs_fns if '665' in item][0]
+        rrs_red_edge = [item for item in self.rrs_fns if '704' in item][0]
+        ndci = utils.band_math([rrs_red_edge, rrs_red], '(B1-B2)/(B1+B2)')
+        chla_mishra = 14.039 + 86.115*ndci + 194.325*ndci**2
         for i in range(classes):
             index_t = index_train[y_train==i+1]
             if len(index_t) * 0.5 > per_choice:
@@ -289,6 +341,8 @@ class AcoliteModel():
                     label_t = data_stack[index_line, index_colm, 5]
                 elif target_wave == 783:
                     label_t = data_stack[index_line, index_colm, 6]
+                elif target_wave == 'chla':
+                    label_t = chla_mishra[index_line, index_colm]
                 label_choice.append(label_t)
         return data_choice, label_choice
 
