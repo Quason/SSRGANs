@@ -1,6 +1,7 @@
 # user customize
 tmp.py
 __temp__/
+data/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
