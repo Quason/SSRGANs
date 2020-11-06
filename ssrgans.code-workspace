@@ -1,0 +1,13 @@
+{
+	"folders": [
+		{
+			"path": "."
+		}
+	],
+	"settings": {
+		"python.linting.pylintArgs": [
+			"--errors-only",
+			"--generated-members=ephem.*,torch.*"
+		]
+	}
+}

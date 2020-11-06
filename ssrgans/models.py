@@ -32,25 +32,7 @@ class AcoliteModel():
         self.height = np.shape(data)[0]
         self.water = None
 
-    def cloud_detect0(self):
-        rhot_red = [item for item in self.rhot_fns if 'rhot_665' in item][0]
-        if self.sensor == 'S2A':
-            rhos_green = [item for item in self.rhos_fns if 'rhos_560' in item][0]
-            rhos_swir1 = [item for item in self.rhos_fns if 'rhos_1614' in item][0]
-        else:
-            rhos_green = [item for item in self.rhos_fns if 'rhos_559' in item][0]
-            rhos_swir1 = [item for item in self.rhos_fns if 'rhos_1610' in item][0]
-        ndsi = utils.band_math([rhos_green,rhos_swir1], '(B1-B2)/(B1+B2)')
-        cloud_prob1 = utils.band_math([rhot_red], 'B1>0.15')
-        cloud = cloud_prob1
-        dst_fn = os.path.join(self.res_dir, self.pre_name+'classification.tif')
-        scene_class = np.asarray(cloud, np.uint8) * 0
-        scene_class[ndsi>-0.01] = 1
-        scene_class[cloud] = 2
-        utils.raster2tif(scene_class, self.geo_trans, self.proj_ref, dst_fn, type='uint8')
-        self.water = (ndsi>-0.01) * (cloud<0.5)
-
-    def cloud_detect(self, vector=None, sola=None, solz=None):
+    def cloud_detect(self, vector=None, sola=None, solz=None, pixel_size=10.0):
         if self.sensor == 'S2A':
             blue_fn = [item for item in self.rhot_fns if 'rhot_492' in item][0]
             green_fn = [item for item in self.rhot_fns if 'rhot_560' in item][0]
@@ -149,8 +131,10 @@ class AcoliteModel():
         # step 3: water
         cloud_prob[blue_swir>2.5] = 0
         cloud_prob = (cloud_prob * 100).astype(np.int)
-        self.water = (ndsi > -0.1) * (cloud_prob == 0) * (cirrus<0.012)
-        
+        if cloud_shadow_key:
+            self.water = (ndsi > -0.1) * (cloud_prob == 0) * (cirrus<0.012) * (cloud_shadow==0)
+        else:
+            self.water = (ndsi > -0.1) * (cloud_prob == 0) * (cirrus<0.012)
         # ice mask
         if self.sensor == 'S2A':
             blue_rrs_fn = [item for item in self.rrs_fns if '492' in item][0]

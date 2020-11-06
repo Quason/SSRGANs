@@ -88,7 +88,7 @@ class MyDataset(Dataset):
         data_t = self.data[index]
         data_t = torch.from_numpy(data_t).type(torch.FloatTensor)
         label_t = self.label[index]
-        label_t = torch.tensor(label_t).type(torch.FloatTensor)
+        label_t = torch.Tensor(label_t).type(torch.FloatTensor)
         label_t = label_t.reshape(-1, 1)
         return data_t, label_t
 
@@ -112,7 +112,7 @@ def myLoader1d(dataset, label, train_perc):
         t_data = t_data.reshape(1, dsize[0])
         t_data = torch.from_numpy(t_data)
         t_data = t_data.type(torch.FloatTensor)
-        t_label = torch.tensor(label[item[0], item[1]])
+        t_label = torch.Tensor(label[item[0], item[1]])
         train_data.append(t_data)
         train_label.append(t_label.type(torch.LongTensor))
     trainloader = torch.utils.data.DataLoader(
@@ -126,7 +126,7 @@ def myLoader1d(dataset, label, train_perc):
         t_data = t_data.reshape(1, dsize[0])
         t_data = torch.from_numpy(t_data)
         t_data = t_data.type(torch.FloatTensor)
-        t_label = torch.tensor(label[item[0], item[1]])
+        t_label = torch.Tensor(label[item[0], item[1]])
         test_data.append(t_data)
         test_label.append(t_label.type(torch.LongTensor))
     testloader = torch.utils.data.DataLoader(
@@ -345,6 +345,11 @@ def reg_models_apply_img(model_fn, src_dir, dst_fn):
     predict = predict * target_std + target_mean
     dst_data = water_mask.astype(float) * 0
     dst_data[water_mask] = predict
+    if '704' in model_fn:
+        rrs_red_fn = [item for item in rrs_fns if 'Rrs_655' in item][0]
+        rrs_red = utils.band_math([rrs_red_fn], 'B1')
+        ndci = (dst_data - rrs_red) / (dst_data + rrs_red)
+        dst_data = 14.039 + 86.115*ndci + 194.325*ndci**2
     dst_data[water < 0.5] = -9999
     utils.raster2tif(dst_data, geo_trans, proj_ref, dst_fn, type='float')
 
@@ -418,30 +423,6 @@ def dl_models_train(net, datasets_fn, train_perc=0.5):
     plt.xlim(data_min, data_max)
     plt.ylim(data_min, data_max)
     plt.show()
-    return net
-
-
-def dl_models_apply(net, datasets_fn):
-    print('apply ...')
-    trainloader, testloader = myLoader3d(datasets_fn, train_perc=0.5)
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    net.to(device=device)
-    criterion = nn.L1Loss()
-    optimizer = torch.optim.Adam(net.parameters(), lr=0.001)
-    for i, data in enumerate(trainloader):
-        inputs, labels = data
-        inputs = inputs.to(device=device)
-        labels = labels.to(device=device)
-        optimizer.zero_grad()
-        outputs = net(inputs)
-        loss = criterion(torch.flatten(outputs), labels)
-        loss.backward()
-        optimizer.step()
-        running_loss += loss.item()
-        if (i+1) % 50 == 0:
-            print('epoch %d loss: %.3f' % (epoch+1, running_loss/10))
-            running_loss = 0
-
     return net
 
 
@@ -626,14 +607,14 @@ if __name__ == '__main__':
     # 测试数据：20171108
     # BP_test()
 
-    # 数据提取
-    ifile = 'D:/data/L1/with-insitu/dianchi/S2A_MSIL1C_20200322T033531_N0209_R061_T48RTN_20200322T064402.SAFE'
-    opath = 'D:/tmp/pip-test/'
-    vector = 'D:/data/vector/dianchi.geojson'
-    # dstfile = './data/__temp__/dataset_dianchi_5x5.npz'
-    dstfile = None
-    opath = os.path.join(opath, str(uuid.uuid1()))
-    preprocess_s2(ifile, opath, vector, dstfile, kmean_cnt=3, target_model='cnn', twave='chla', kernel=5)
+    # # 数据提取
+    # ifile = 'D:/data/L1/with-insitu/dianchi/S2A_MSIL1C_20200322T033531_N0209_R061_T48RTN_20200322T064402.SAFE'
+    # opath = 'D:/tmp/pip-test/'
+    # vector = 'D:/data/vector/dianchi.geojson'
+    # # dstfile = './data/__temp__/dataset_dianchi_5x5.npz'
+    # dstfile = None
+    # opath = os.path.join(opath, str(uuid.uuid1()))
+    # preprocess_s2(ifile, opath, vector, dstfile, kmean_cnt=3, target_model='cnn', twave='chla', kernel=5)
 
     # # 测试数据提取
     # ifile = 'D:/data/L1/with-insitu/dianchi/LC08_L1TP_129043_20200322_20200326_01_T1'
@@ -644,10 +625,14 @@ if __name__ == '__main__':
 
     # # ML模型训练
     # train_fns = [
-    #     './data/__temp__/dataset_dianchi_5x5.npz',
+    #     './data/dataset_dianchi.npz',
+    #     './data/dataset_hulunhu.npz',
+    #     './data/dataset_qiandaohu.npz',
+    #     './data/dataset_taihu.npz',
+    #     './data/dataset_xingyunhu.npz',
     # ]
     # net, input_scale, target_mean, target_std = reg_models_train(
-    #     train_fns, method='RFR', show_fig=False, save_net='ssrn_chla_RFR.pkl', train_percent=0.5
+    #     train_fns, method='LR', show_fig=False, save_net='ssrn_704_LR.pkl', train_percent=0.5
     # )
     # # 效果较差：星云湖，千岛湖
     # reg_models_apply(
@@ -657,6 +642,12 @@ if __name__ == '__main__':
     #     target_std=target_std,
     #     show_fig=True
     # )
+
+    # # 模型应用: ML
+    # model_fn = './data/ssrn_704_LR.pkl'
+    # src_dir = r'D:/tmp/pip-test/dianchi/20200322-S2-fake'
+    # dst_fn = os.path.join(src_dir, 'chla_LR.tif')
+    # reg_models_apply_img(model_fn, src_dir, dst_fn)
 
     # # CNN模型训练和保存
     # net = nets.WaterNet(4, 1)
@@ -670,15 +661,8 @@ if __name__ == '__main__':
     # water = r'D:\tmp\pip-test\dianchi\20200322-S2-fake\S2A_MSI_2020_03_22_03_35_31_T48RTN_water.tif'
     # chla_nir2red(rrs_red, rrs_nir, water)
 
-    # # 模型应用: CNN
-    # model_fn = './data/ssrn_chla_cnn_dianchi.pt'
-    # src_dir = r'D:/tmp/pip-test/dianchi/20200322-S2-fake'
-    # dst_fn = None
-    # dl_models_apply_img(model_fn, src_dir, dst_fn, scale=0.01, model_kernel=5)
-
-
-    # # 模型应用: ML
-    # model_fn = './data/ssrn_chla_RFR.pkl'
-    # src_dir = r'D:/tmp/pip-test/dianchi/20200322-S2-fake'
-    # dst_fn = os.path.join(src_dir, 'chla_RFR.tif')
-    # reg_models_apply_img(model_fn, src_dir, dst_fn)
+    # 模型应用: CNN
+    model_fn = './data/ssrn_chla_cnn_dianchi.pt'
+    src_dir = r'D:/tmp/pip-test/dianchi/20200322-S2-fake'
+    dst_fn = None
+    dl_models_apply_img(model_fn, src_dir, dst_fn, scale=0.01, model_kernel=5)
